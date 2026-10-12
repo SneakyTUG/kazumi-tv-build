@@ -28,6 +28,18 @@ jobs:
           repository: Predidit/Kazumi
           ref: 2.3.8
 
+      - name: Trim Android SDK (drop old NDK/emulator/sources, ~10GB)
+        run: |
+          sudo du -sh /usr/local/lib/android/sdk/* 2>/dev/null | sort -h | tail -8 || true
+          sudo rm -rf /usr/local/lib/android/sdk/ndk/*
+          sudo rm -rf /usr/local/lib/android/sdk/emulator
+          sudo rm -rf /usr/local/lib/android/sdk/sources
+          sudo rm -rf /usr/local/lib/android/sdk/system-images
+          sudo rm -rf /usr/local/lib/android/sdk/extras
+          sudo rm -rf /usr/local/lib/android/sdk/patcher
+          sudo rm -rf /usr/local/lib/android/sdk/tools
+          df -h /
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
