@@ -70,9 +70,24 @@ jobs:
           PY
 
       - name: Build (split per ABI)
-        run: flutter build apk --split-per-abi
+        id: build
+        run: flutter build apk --split-per-abi 2>&1 | tee build_log.txt
+        continue-on-error: true
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build_log.txt
+          if-no-files-found: ignore
+
+      - name: Fail if build failed
+        if: steps.build.outcome == 'failure'
+        run: exit 1
 
       - name: Upload armeabi-v7a APK
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: kazumi-armeabi-v7a-tv
@@ -80,6 +95,7 @@ jobs:
           if-no-files-found: error
 
       - name: Also upload arm64 for reference
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: kazumi-arm64-v8a-tv
