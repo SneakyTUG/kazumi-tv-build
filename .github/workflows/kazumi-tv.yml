@@ -17,11 +17,12 @@ name: Kazumi TV (armeabi-v7a)
 # 与官方 CI（Predidit/Kazumi 是公开仓库，构建一直稳定成功）完全一致。
 # → 以后这个仓库必须保持 public，别改回 private。
 #
-# run #8 失败：第一版给「上游 Kazumi」的 checkout 加了 path: kazumi，结果
-# git fetch 拉不下 Predidit/Kazumi（exit 1 重试 3 次全败）。
-# → 本版修复：上游 checkout 必须放在**仓库根目录**（不加 path），与 run #1~#7
-#   验证可用的配置一致；补丁仓库（kazumi-tv-build）才 checkout 到 patches/ 子目录。
-#   两个 checkout 互相独立，不会污染。
+# run #8~#10 连续失败：根因不是 path:、也不是 checkout 拉第三方库的授权，
+# 而是 **tag 名写错**——Predidit/Kazumi 的发布 tag 是 `2.3.8`（没有 v 前缀），
+# 我一路写成 `v2.3.8`。`actions/checkout ref: v2.3.8` 生成的双 refspec
+# （refs/heads/v2.3.8* + refs/tags/v2.3.8*）在远端没有任何匹配 → git fetch exit 1；
+# `git clone -b v2.3.8` 也报 "Remote branch v2.3.8 not found"。
+# run #7（ref: 2.3.8）成功 = 铁证。本版严格用 `ref: 2.3.8`，照 run #7 的成功配置。
 #
 # 弹幕 / Bangumi 镜像密钥：官方 CI 用 --dart-define 注入 GitHub secrets，公开源码里
 # 没有。这里从官方 release APK 的 libapp.so Dart 快照里提取（字符串池前缀编码为
@@ -36,21 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # 上游 Kazumi 源码：run #8/#9 用 actions/checkout(repository: Predidit/Kazumi, ref: v2.3.8)
-      # 连续失败——该 action 生成的双 refspec（refs/heads/v2.3.8* + refs/tags/v2.3.8*）
-      # 在 runner 上 git fetch 直接 exit 1 且吞掉报错（疑似 GITHUB_TOKEN 对第三方公开库
-      # 授权范围受限，或 tag refspec 匹配问题）。改用匿名 git clone（公开库无需 token），
-      # 绕开 checkout 的 refspec 坑。先 clone 到子目录再 cp -a 到根，避免 clone 进非空目录报错。
-      - name: Clone Kazumi source (v2.3.8)
-        run: |
-          set -e
-          git clone --depth 1 --branch v2.3.8 https://github.com/Predidit/Kazumi kazumi_src
-          cp -a kazumi_src/. .
-          rm -rf kazumi_src
-          echo "--- top level of workspace ---"
-          ls -la
-          echo "--- pubspec exists? ---"
-          test -f pubspec.yaml && echo OK || exit 1
+      # 上游 Kazumi 源码检出到根目录（照 run #7 的成功配置，ref 必须用 2.3.8，无 v 前缀！）
+      - name: Checkout Kazumi source (Predidit/Kazumi@2.3.8)
+        uses: actions/checkout@v4
+        with:
+          repository: Predidit/Kazumi
+          ref: 2.3.8
 
       # 补丁仓库（kazumi-tv-build）检出到 patches/ 子目录，拿到 tv_patches.tar.gz。
       # 这是本仓库自己的 GITHUB_TOKEN 授权范围，actions/checkout 正常可用。
@@ -97,7 +89,7 @@ jobs:
       - name: Remove build id from jni CMake (same as upstream CI)
         run: sed -i -e 's/-Wl,/-Wl,--build-id=none,/' ${{ steps.flutter-action.outputs.PUB-CACHE-PATH }}/hosted/pub.dev/jni-*/src/CMakeLists.txt
 
-      # run #5 卡死点之一：Gradle 文件系统监听抛 "Already watching path" 后构建挂住 16 分钟
+      # Gradle 文件系统监听抛 "Already watching path" 后构建挂死
       - name: Disable Gradle file-system watching
         run: |
           grep -q 'org.gradle.vfs.watch' android/gradle.properties \
