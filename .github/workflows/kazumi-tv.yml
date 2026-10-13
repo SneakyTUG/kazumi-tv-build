@@ -170,6 +170,28 @@ jobs:
           echo "flutter build exited with ${{ steps.build.outputs.exit_code }}"
           exit 1
 
+      # 固定签名：flutter build --release 默认用 runner 随机 debug keystore，
+      # 每次构建签名都不同 → 电视上 pm install -r 永远报
+      # INSTALL_FAILED_UPDATE_INCOMPATIBLE。这里用 repo secrets 里的固定
+      # PKCS12 keystore 统一重签，以后可直接覆盖安装（数据不丢）。
+      - name: Re-sign APK with fixed key
+        if: steps.build.outputs.exit_code == '0'
+        env:
+          KZ_TV_KS_B64: ${{ secrets.KZ_TV_KS_B64 }}
+          KZ_TV_KS_PASS: ${{ secrets.KZ_TV_KS_PASS }}
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "build-tools: $BT"
+          echo "$KZ_TV_KS_B64" | base64 -d > /tmp/kazumi-tv.p12
+          APK=build/app/outputs/flutter-apk/app-release.apk
+          "$BT/apksigner" sign \
+            --ks /tmp/kazumi-tv.p12 --ks-pass env:KZ_TV_KS_PASS \
+            --key-pass env:KZ_TV_KS_PASS \
+            --out /tmp/app-signed.apk "$APK"
+          "$BT/apksigner" verify --print-certs /tmp/app-signed.apk
+          mv /tmp/app-signed.apk "$APK"
+          echo "--- re-signed OK ---"
+
       - name: Upload armeabi-v7a APK
         if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
