@@ -3,6 +3,16 @@ name: Kazumi TV (armeabi-v7a)
 # 用途：构建 32 位 armeabi-v7a 的 Kazumi，并给清单打上 Android TV 声明
 # 官方 release 流程用的是 flutter build apk --split-per-abi，本来就会产出
 # app-armeabi-v7a-release.apk，但只上传了 arm64 那份 —— 这里把 32 位那份捞出来。
+#
+# 排错记录（run #4 / run #5 连续两次 runner 侧崩）：
+#   run #4: 构建实际已成功，但 runner 收尾时 "No space left on device"
+#   run #5: 构建推进到 javac 后静默 16 分钟，随后进程被 SIGTERM(143) 掐断
+#   → 两次都发生在我们比官方 CI 多做的两步上：jlumbroso/free-disk-space
+#     （swap-storage:true 会**关掉 runner 的 swap**，4G Gradle 堆 + Flutter
+#      工具链直接压爆内存，runner 进程被 OOM kill → GitHub 报 "runner has
+#      received a shutdown signal"）和手动裁剪 Android SDK。
+#   → 结论：官方 CI 在原封不动的 ubuntu-latest 上就能构建成功，别乱动 runner
+#     环境。这里回归"最小偏差"，只保留必要的诊断信息。
 on:
   workflow_dispatch:
 
@@ -10,35 +20,13 @@ jobs:
   build-armv7:
     name: Build Kazumi armeabi-v7a (TV)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - name: Free disk space (runner 14GB 会被 Flutter+NDK 撑爆)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: false      # 保留预装 Android SDK（构建要用）
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
       - name: Checkout Kazumi source (Predidit/Kazumi@2.3.8)
         uses: actions/checkout@v4
         with:
           repository: Predidit/Kazumi
           ref: 2.3.8
-
-      - name: Trim Android SDK (drop old NDK/emulator/sources, ~10GB)
-        run: |
-          sudo du -sh /usr/local/lib/android/sdk/* 2>/dev/null | sort -h | tail -8 || true
-          sudo rm -rf /usr/local/lib/android/sdk/ndk/*
-          sudo rm -rf /usr/local/lib/android/sdk/emulator
-          sudo rm -rf /usr/local/lib/android/sdk/sources
-          sudo rm -rf /usr/local/lib/android/sdk/system-images
-          sudo rm -rf /usr/local/lib/android/sdk/extras
-          sudo rm -rf /usr/local/lib/android/sdk/patcher
-          sudo rm -rf /usr/local/lib/android/sdk/tools
-          df -h /
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -58,6 +46,13 @@ jobs:
 
       - name: Remove build id from jni CMake (same as upstream CI)
         run: sed -i -e 's/-Wl,/-Wl,--build-id=none,/' ${{ steps.flutter-action.outputs.PUB-CACHE-PATH }}/hosted/pub.dev/jni-*/src/CMakeLists.txt
+
+      # run #5 卡死点：Gradle 文件系统监听抛 "Already watching path" 后构建挂住 16 分钟
+      - name: Disable Gradle file-system watching
+        run: |
+          grep -q 'org.gradle.vfs.watch' android/gradle.properties \
+            || echo 'org.gradle.vfs.watch=false' >> android/gradle.properties
+          tail -3 android/gradle.properties
 
       - name: Patch AndroidManifest for Android TV
         run: |
@@ -94,8 +89,29 @@ jobs:
 
       - name: Build armv7 APK
         id: build
-        run: flutter build apk --release --target-platform android-arm 2>&1 | tee build_log.txt
-        continue-on-error: true
+        run: |
+          # 后台监控：磁盘/内存写进日志。runner 若再被外部掐断，API 侧仍能取到这段证据
+          ( while true; do
+              printf '%s DISK %s | MEM %s | TOP %s\n' "$(date -u +%H:%M:%S)" \
+                "$(df -h / | awk 'NR==2{print $4" free, "$5" used"}')" \
+                "$(free -m | awk 'NR==2{print $7"MB avail, "$3"MB used"}')" \
+                "$(ps -eo rss,comm --sort=-rss | awk 'NR==2{print $2" "$1"MB"}')"
+              sleep 30
+            done ) >> build_log.txt &
+          MON=$!
+          set +e
+          timeout 60m flutter build apk --release --target-platform android-arm 2>&1 | tee -a build_log.txt
+          rc=${PIPESTATUS[0]}
+          kill $MON 2>/dev/null
+          wait $MON 2>/dev/null
+          {
+            echo "BUILD_EXIT=$rc"
+            df -h /
+            free -m
+          } | tee -a build_log.txt
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          # 不在这里失败：保证后面的日志/产物上传步骤一定执行
+          exit 0
 
       - name: Upload build log
         if: always()
@@ -103,14 +119,16 @@ jobs:
         with:
           name: build-log
           path: build_log.txt
-          if-no-files-found: ignore
+          if-no-files-found: warn
 
       - name: Fail if build failed
-        if: steps.build.outcome == 'failure'
-        run: exit 1
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "flutter build exited with ${{ steps.build.outputs.exit_code }}"
+          exit 1
 
       - name: Upload armeabi-v7a APK
-        if: steps.build.outcome == 'success'
+        if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: kazumi-armeabi-v7a-tv
