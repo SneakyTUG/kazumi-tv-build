@@ -4,15 +4,19 @@ name: Kazumi TV (armeabi-v7a)
 # 官方 release 流程用的是 flutter build apk --split-per-abi，本来就会产出
 # app-armeabi-v7a-release.apk，但只上传了 arm64 那份 —— 这里把 32 位那份捞出来。
 #
-# 排错记录（run #4 / run #5 连续两次 runner 侧崩）：
-#   run #4: 构建实际已成功，但 runner 收尾时 "No space left on device"
-#   run #5: 构建推进到 javac 后静默 16 分钟，随后进程被 SIGTERM(143) 掐断
-#   → 两次都发生在我们比官方 CI 多做的两步上：jlumbroso/free-disk-space
-#     （swap-storage:true 会**关掉 runner 的 swap**，4G Gradle 堆 + Flutter
-#      工具链直接压爆内存，runner 进程被 OOM kill → GitHub 报 "runner has
-#      received a shutdown signal"）和手动裁剪 Android SDK。
-#   → 结论：官方 CI 在原封不动的 ubuntu-latest 上就能构建成功，别乱动 runner
-#     环境。这里回归"最小偏差"，只保留必要的诊断信息。
+# ===== 排错记录（重要，别再踩）=====
+# run #4/#5/#6 连续三次在 flutter build 中途 runner 侧死亡（#5 是 SIGTERM 143，
+# #6 是步骤卡在 in_progress、后续全 pending）。真正原因：仓库是**私有**的，
+# GitHub 对私有仓库只给 2 核 / 7G 内存的 runner，而 android/gradle.properties 里
+# 写着 -Xmx4G，Gradle 堆直接压爆内存 → runner 进程被 OOM kill。
+# 2026-10-13 把仓库改成公开后实测：4 核 / 16G 内存 / 3G swap / 86G 可用磁盘，
+# 与官方 CI（Predidit/Kazumi 是公开仓库，构建一直稳定成功）完全一致。
+# → 以后这个仓库必须保持 public，别改回 private。
+#
+# 弹幕 / Bangumi 镜像密钥：官方 CI 用 --dart-define 注入 GitHub secrets，公开源码里
+# 没有。这里从官方 release APK 的 libapp.so Dart 快照里提取（字符串池前缀编码为
+# (len<<1)|0x80，逐个 offset 穷举匹配得到 4 个高熵串，与 4 个 dart-define 变量一一
+# 对应），存成本仓库 secrets。公开仓库里**绝不能**把明文写进 workflow 文件。
 on:
   workflow_dispatch:
 
@@ -47,7 +51,7 @@ jobs:
       - name: Remove build id from jni CMake (same as upstream CI)
         run: sed -i -e 's/-Wl,/-Wl,--build-id=none,/' ${{ steps.flutter-action.outputs.PUB-CACHE-PATH }}/hosted/pub.dev/jni-*/src/CMakeLists.txt
 
-      # run #5 卡死点：Gradle 文件系统监听抛 "Already watching path" 后构建挂住 16 分钟
+      # run #5 卡死点之一：Gradle 文件系统监听抛 "Already watching path" 后构建挂住 16 分钟
       - name: Disable Gradle file-system watching
         run: |
           grep -q 'org.gradle.vfs.watch' android/gradle.properties \
@@ -90,7 +94,17 @@ jobs:
       - name: Build armv7 APK
         id: build
         run: |
-          # 后台监控：磁盘/内存写进日志。runner 若再被外部掐断，API 侧仍能取到这段证据
+          # 先记录 runner 规格 + 磁盘基线，出问题时不用再靠猜
+          {
+            echo "===== runner specs $(date -u +%FT%TZ) ====="
+            echo "nproc: $(nproc)"
+            free -m
+            df -h /
+            echo "gradle heap: $(grep -o '\-Xmx[0-9G]*' android/gradle.properties)"
+            echo "===== build start ====="
+          } > build_log.txt
+
+          # 后台监控：磁盘/内存/最占内存进程，每 30 秒一条写进日志
           ( while true; do
               printf '%s DISK %s | MEM %s | TOP %s\n' "$(date -u +%H:%M:%S)" \
                 "$(df -h / | awk 'NR==2{print $4" free, "$5" used"}')" \
@@ -100,18 +114,30 @@ jobs:
             done ) >> build_log.txt &
           MON=$!
           set +e
-          timeout 60m flutter build apk --release --target-platform android-arm 2>&1 | tee -a build_log.txt
+          timeout 60m flutter build apk --release --target-platform android-arm \
+            --dart-define=DANDANAPI_APPID="$DANDANAPI_APPID" \
+            --dart-define=DANDANAPI_KEY="$DANDANAPI_KEY" \
+            --dart-define=KAZUMI_APPID="$KAZUMI_APPID" \
+            --dart-define=KAZUMI_KEY="$KAZUMI_KEY" \
+            2>&1 | tee -a build_log.txt
           rc=${PIPESTATUS[0]}
           kill $MON 2>/dev/null
           wait $MON 2>/dev/null
           {
-            echo "BUILD_EXIT=$rc"
+            echo "===== build exit=$rc $(date -u +%FT%TZ) ====="
             df -h /
             free -m
+            echo "--- outputs ---"
+            ls -la build/app/outputs/flutter-apk/ 2>/dev/null || true
           } | tee -a build_log.txt
           echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
           # 不在这里失败：保证后面的日志/产物上传步骤一定执行
           exit 0
+        env:
+          DANDANAPI_APPID: ${{ secrets.DANDANAPI_APPID }}
+          DANDANAPI_KEY: ${{ secrets.DANDANAPI_KEY }}
+          KAZUMI_APPID: ${{ secrets.KAZUMI_APPID }}
+          KAZUMI_KEY: ${{ secrets.KAZUMI_KEY }}
 
       - name: Upload build log
         if: always()
