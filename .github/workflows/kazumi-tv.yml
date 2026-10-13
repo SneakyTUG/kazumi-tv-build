@@ -4,9 +4,9 @@ name: Kazumi TV (armeabi-v7a)
 # 官方 release 流程用的是 flutter build apk --split-per-abi，本来就会产出
 # app-armeabi-v7a-release.apk，但只上传了 arm64 那份 —— 这里把 32 位那份捞出来。
 #
-# 与纯官方源码的区别：本仓库根目录的 tv_patches.tar.gz 含一份「电视适配」Dart 源码补丁
-# （去 RadioGroup 焦点陷阱、播放页方向键让位给面板、4 处 GestureDetector 改可获焦等），
-# 在 checkout 上游源码后解包覆盖对应文件，从而让构建产物携带这些修复。
+# 源码来源（2026-10-13 起）：直接检出 **SneakyTUG/Kazumi 的 tv 分支**（完整源码仓库，
+# fork 自 Predidit/Kazumi，README 带修改声明）。TV 适配改动直接提交到该仓库，
+# 本 workflow 不再做补丁解包覆盖。
 #
 # ===== 排错记录（重要，别再踩）=====
 # run #4/#5/#6 连续三次在 flutter build 中途 runner 侧死亡（#5 是 SIGTERM 143，
@@ -18,16 +18,10 @@ name: Kazumi TV (armeabi-v7a)
 # → 以后这个仓库必须保持 public，别改回 private。
 #
 # run #8~#10 连续失败：根因不是 path:、也不是 checkout 拉第三方库的授权，
-# 而是 **tag 名写错**——Predidit/Kazumi 的发布 tag 是 `2.3.8`（没有 v 前缀），
-# 我一路写成 `v2.3.8`。`actions/checkout ref: v2.3.8` 生成的双 refspec
-# （refs/heads/v2.3.8* + refs/tags/v2.3.8*）在远端没有任何匹配 → git fetch exit 1；
-# `git clone -b v2.3.8` 也报 "Remote branch v2.3.8 not found"。
-# run #7（ref: 2.3.8）成功 = 铁证。本版严格用 `ref: 2.3.8`，照 run #7 的成功配置。
+# 而是 **tag 名写错**——Predidit/Kazumi 的发布 tag 是 `2.3.8`（没有 v 前缀）。
 #
-# 弹幕 / Bangumi 镜像密钥：官方 CI 用 --dart-define 注入 GitHub secrets，公开源码里
-# 没有。这里从官方 release APK 的 libapp.so Dart 快照里提取（字符串池前缀编码为
-# (len<<1)|0x80，逐个 offset 穷举匹配得到 4 个高熵串，与 4 个 dart-define 变量一一
-# 对应），存成本仓库 secrets。公开仓库里**绝不能**把明文写进 workflow 文件。
+# run #17 装机报 INSTALL_FAILED_UPDATE_INCOMPATIBLE：电视上的 Kazumi 被换过渠道，
+# 签名不匹配。解法：pm uninstall 先卸载再 install（数据会清空）。
 on:
   workflow_dispatch:
 
@@ -37,38 +31,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # 上游 Kazumi 源码检出到根目录（照 run #7 的成功配置，ref 必须用 2.3.8，无 v 前缀！）
-      - name: Checkout Kazumi source (Predidit/Kazumi@2.3.8)
+      # TV 适配源码仓库（fork + tv 分支），检出到根目录。
+      # 公开仓库，actions/checkout 默认 GITHUB_TOKEN 即可读取。
+      - name: Checkout Kazumi TV source (SneakyTUG/Kazumi@tv)
         uses: actions/checkout@v4
         with:
-          repository: Predidit/Kazumi
-          ref: 2.3.8
+          repository: SneakyTUG/Kazumi
+          ref: tv
 
-      # 补丁仓库（kazumi-tv-build）检出到 patches/ 子目录，拿到 tv_patches.tar.gz。
-      # 这是本仓库自己的 GITHUB_TOKEN 授权范围，actions/checkout 正常可用。
-      - name: Checkout build repo (patches)
-        uses: actions/checkout@v4
-        with:
-          path: patches
-
-      - name: Apply TV Dart patches (overwrite modified files)
+      # 校验 TV 改动真的在源码里（防止分支被误回退后静默构建出无适配的包）
+      - name: Verify TV adaptation present
         run: |
-          ls -la patches/tv_patches.tar.gz
-          tar xzf patches/tv_patches.tar.gz -C .
-          echo "--- patched files ---"
-          tar tzf patches/tv_patches.tar.gz
-
-      # 校验补丁真的落进去了：补丁里带 SettingsRadioScope / togglepanel 等标记，
-      # 若解包静默失败，这些 grep 会落空，提前暴露而不是带着未修复源码构建成功。
-      - name: Verify patches applied
-        run: |
-          echo "--- SettingsRadioScope present? ---"
           grep -rl "SettingsRadioScope" lib/bean/settings/settings_list.dart || exit 1
-          echo "--- togglepanel shortcut present? ---"
           grep -rl "togglepanel" lib/utils/constants.dart lib/pages/player/player_item.dart || exit 1
-          echo "--- RadioGroup fully removed (should print nothing)? ---"
-          grep -rn "RadioGroup<" lib/ || echo "OK: no RadioGroup< anywhere"
-          echo "--- patch verification passed ---"
+          test -f lib/pages/player/player_tv_panel.dart || exit 1
+          grep -q "_TvRail" lib/pages/menu/menu.dart || exit 1
+          grep -q "sidePanelOpen" lib/pages/video/video_controller.dart || exit 1
+          echo "--- TV adaptation verified ---"
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
