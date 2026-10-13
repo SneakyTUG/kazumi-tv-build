@@ -1,8 +1,12 @@
 name: Kazumi TV (armeabi-v7a)
 
-# 用途：构建 32 位 armeabi-v7a 的 Kazumi，并给清单打上 Android TV 声明
+# 用途：构建 32 位 armeabi-v7a 的 Kazumi，并给清单打上 Android TV 声明。
 # 官方 release 流程用的是 flutter build apk --split-per-abi，本来就会产出
 # app-armeabi-v7a-release.apk，但只上传了 arm64 那份 —— 这里把 32 位那份捞出来。
+#
+# 与纯官方源码的区别：本仓库根目录的 tv_patches.tar.gz 含一份「电视适配」Dart 源码补丁
+# （去 RadioGroup 焦点陷阱、播放页方向键让位给面板、4 处 GestureDetector 改可获焦等），
+# 在 checkout 上游源码后解包覆盖对应文件，从而让构建产物携带这些修复。
 #
 # ===== 排错记录（重要，别再踩）=====
 # run #4/#5/#6 连续三次在 flutter build 中途 runner 侧死亡（#5 是 SIGTERM 143，
@@ -20,17 +24,34 @@ name: Kazumi TV (armeabi-v7a)
 on:
   workflow_dispatch:
 
+defaults:
+  run:
+    working-directory: kazumi
+
 jobs:
   build-armv7:
     name: Build Kazumi armeabi-v7a (TV)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout Kazumi source (Predidit/Kazumi@2.3.8)
+      # 先检出本仓库（kazumi-tv-build），拿到 workflow 与 tv_patches.tar.gz
+      - name: Checkout build repo (patches)
+        uses: actions/checkout@v4
+
+      # 再检出上游 Kazumi 源码到子目录 kazumi/，避免覆盖上面的补丁
+      - name: Checkout Kazumi source
         uses: actions/checkout@v4
         with:
           repository: Predidit/Kazumi
-          ref: 2.3.8
+          ref: v2.3.8
+          path: kazumi
+
+      - name: Apply TV Dart patches (overwrite modified files)
+        run: |
+          ls -la tv_patches.tar.gz
+          tar xzf tv_patches.tar.gz -C kazumi
+          echo "--- patched files ---"
+          tar tzf tv_patches.tar.gz
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -43,7 +64,7 @@ jobs:
         uses: subosito/flutter-action@v2.16.0
         with:
           channel: stable
-          flutter-version-file: pubspec.yaml
+          flutter-version-file: kazumi/pubspec.yaml
 
       - name: Get Flutter dependencies
         run: flutter pub get
@@ -144,7 +165,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: build_log.txt
+          path: kazumi/build_log.txt
           if-no-files-found: warn
 
       - name: Fail if build failed
@@ -158,5 +179,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kazumi-armeabi-v7a-tv
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: kazumi/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
