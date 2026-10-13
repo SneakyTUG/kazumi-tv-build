@@ -36,16 +36,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      # 上游 Kazumi 源码检出到根目录（run #1~#7 验证可用的配置）。
-      # 严禁给这个 checkout 加 path:，否则 git fetch 拉不下 Predidit/Kazumi（run #8 教训）。
-      - name: Checkout Kazumi source
-        uses: actions/checkout@v4
-        with:
-          repository: Predidit/Kazumi
-          ref: v2.3.8
+      # 上游 Kazumi 源码：run #8/#9 用 actions/checkout(repository: Predidit/Kazumi, ref: v2.3.8)
+      # 连续失败——该 action 生成的双 refspec（refs/heads/v2.3.8* + refs/tags/v2.3.8*）
+      # 在 runner 上 git fetch 直接 exit 1 且吞掉报错（疑似 GITHUB_TOKEN 对第三方公开库
+      # 授权范围受限，或 tag refspec 匹配问题）。改用匿名 git clone（公开库无需 token），
+      # 绕开 checkout 的 refspec 坑。先 clone 到子目录再 cp -a 到根，避免 clone 进非空目录报错。
+      - name: Clone Kazumi source (v2.3.8)
+        run: |
+          set -e
+          git clone --depth 1 --branch v2.3.8 https://github.com/Predidit/Kazumi kazumi_src
+          cp -a kazumi_src/. .
+          rm -rf kazumi_src
+          echo "--- top level of workspace ---"
+          ls -la
+          echo "--- pubspec exists? ---"
+          test -f pubspec.yaml && echo OK || exit 1
 
       # 补丁仓库（kazumi-tv-build）检出到 patches/ 子目录，拿到 tv_patches.tar.gz。
-      # 与上面的上游 checkout 相互独立，不会污染根目录。
+      # 这是本仓库自己的 GITHUB_TOKEN 授权范围，actions/checkout 正常可用。
       - name: Checkout build repo (patches)
         uses: actions/checkout@v4
         with:
