@@ -1,0 +1,25 @@
+name: runner-diag
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: specs
+        run: |
+          {
+            echo "=== nproc ==="; nproc
+            echo "=== free -m ==="; free -m
+            echo "=== df -h / ==="; df -h /
+            echo "=== lscpu (head) ==="; lscpu | head -20
+            echo "=== cgroup mem limit ==="; cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo n/a
+            echo "=== cgroup cpu max ==="; cat /sys/fs/cgroup/cpu.max 2>/dev/null || echo n/a
+            echo "=== swap ==="; swapon --show || echo "no swap"
+          } > specs.txt 2>&1
+          cat specs.txt
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-specs
+          path: specs.txt
+          if-no-files-found: error
